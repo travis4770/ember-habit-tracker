@@ -1,0 +1,43 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Fields that must NEVER change via a client write — only the Stripe
+    // webhook (running with Admin SDK, which bypasses these rules entirely)
+    // is allowed to touch them. This blocks a user from opening devtools
+    // and setting their own `plan: "premium"`.
+    function billingFieldsUnchanged() {
+      let protectedFields = ['plan', 'stripeCustomerId', 'stripeSubscriptionId', 'subscriptionStatus', 'currentPeriodEnd'];
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny(protectedFields) == false;
+    }
+
+    match /users/{uid} {
+      allow read: if isOwner(uid);
+      // Allow create only for the user's own doc, and only with a safe
+      // initial plan value (prevents signing up already "premium").
+      allow create: if isOwner(uid)
+                    && request.resource.data.plan == 'free';
+      // Allow updates to non-billing fields (e.g. reminders, fcmTokens,
+      // displayName) but never to plan/subscription fields.
+      allow update: if isOwner(uid) && billingFieldsUnchanged();
+      allow delete: if false;
+
+      match /habits/{habitId} {
+        allow read, write: if isOwner(uid);
+
+        match /completions/{dateKey} {
+          allow read, write: if isOwner(uid);
+        }
+      }
+    }
+  }
+}
